@@ -17,23 +17,23 @@ public class Program
     static async Task Main(string[] args)
     {
 
-       //create service collection instance 
+        //create service collection instance 
         var servicecollection = new ServiceCollection();
 
-         //build the configuration 
+        //build the configuration 
         var configuration = new ConfigurationBuilder()
         .SetBasePath(AppContext.BaseDirectory)
         .AddJsonFile("appsettings.json", false)
         .Build();
-         
-         //add configuration to service 
+
+        //add configuration to service 
         servicecollection.AddSingleton<IConfiguration>(configuration);
 
         //build service collection 
-        var provider =  servicecollection.BuildServiceProvider();
+        var provider = servicecollection.BuildServiceProvider();
 
         //get required service 
-        var config = provider.GetRequiredService<IConfiguration>(); 
+        var config = provider.GetRequiredService<IConfiguration>();
 
         // getting paths from configuration (bin/debug/net7.0/appsettings.json)
 
@@ -41,15 +41,13 @@ public class Program
         string? keyword = config["Paths:KeywordsPath"];
         string? Savedurls = config["Paths:SavedUrlPath"];
         string? Extendedurls = config["Paths:ExtendedUrlPath"];
+        string? SavedEmails = config["Paths:EmailsPath"];
 
-        
+
         var ap = new PageService();
 
         if (File.Exists(keyword))
         {
-            Console.Write("searching...");
-            Thread.Sleep(1500);
-            Console.WriteLine("...... ");
 
             string[] keywords = File.ReadAllLines(keyword);
 
@@ -57,38 +55,55 @@ public class Program
             var formattedkeywords = ap.KeywordsFormatter(keywords);
 
             int pagenumber = 0;
+            char choice = 'n';
 
-            Console.WriteLine("Do you want to save Urls too ?? Y/N");
+            Console.Write("1 .=> Search with Keyword  \n2 .=> Search with Url \n");
 
-            char choice = Convert.ToChar(Console.ReadLine());
+            int answer = Convert.ToInt32(Console.ReadLine());
 
-            foreach (var word in formattedkeywords)
-            {           
-                string url = $"https://www.yellowpages.com.vn/srch/{word}.html";
-                //send request 
-                await ap.SearchUrlAsync(url, pagenumber, word, DomainPath, Savedurls, choice); 
-
-            }
-            
-
-            if(choice == 'Y'|| choice == 'y')
+            switch (answer)
             {
-                Console.WriteLine("Searching for saved urls");
+                case 1:
 
-                if(File.Exists(Savedurls))
-                {
-                     string[] savedurls = File.ReadAllLines(Savedurls);
-                     foreach(var url in savedurls)
-                     {
-                        string fmturl = url.Trim('"');
+                    Console.WriteLine("Do you want to save Urls ?? Y/N");
+                    choice = Convert.ToChar(Console.ReadLine());
 
-                        await ap.SearchUrlAsync(fmturl, pagenumber, null, DomainPath, Extendedurls, choice); 
-                     }
- 
-                }
-               
+                    foreach (var word in formattedkeywords)
+                    {
+                        string url = $"https://www.yellowpages.com.vn/srch/{word}.html";
+
+                        //send request 
+                        await ap.SearchUrlAsync(url, pagenumber, word, DomainPath, Savedurls, choice, SavedEmails);
+                    }
+                    break;
+
+                case 2:
+
+                    Console.WriteLine("Do you want to save Extended Urls ?? Y/N");
+                    choice = Convert.ToChar(Console.ReadLine());
+
+                    Console.WriteLine("Searching for saved urls");
+
+                    if (File.Exists(Savedurls))
+                    {
+                        string[] savedurls = File.ReadAllLines(Savedurls);
+                        foreach (var url in savedurls)
+                        {
+                            await ap.SearchUrlAsync(url, pagenumber, null, DomainPath, Extendedurls, choice, SavedEmails);
+                        }
+
+                    }
+                    break;
+
+                default:
+                    Console.WriteLine("You did not provide recognized input");
+                    break;
+
             }
-
+        }
+        else
+        {
+            Console.WriteLine("File path not found.Please check and try again....");
         }
 
     }
@@ -99,6 +114,8 @@ public class PageService
     private IServiceProvider _service;
     private IHttpClientFactory _httpclient;
     private HashSet<string> VnDomais = new HashSet<string>();
+
+    private HashSet<string> SavedEmails = new HashSet<string>();
     private HashSet<string> SavedUrlToSearch = new HashSet<string>();
 
     private readonly string[] _DomainsNotToCollect;
@@ -121,7 +138,8 @@ public class PageService
             "line",
             "wechat",
             "viber",
-            "google"
+            "google",
+            "bitly"
         };
     }
 
@@ -142,23 +160,11 @@ public class PageService
         return keywords;
     }
 
-    public string FormatCountry(string? Country)
-    {
-        string? result = Country?.ToLower();
-        if (result.Contains(' '))
-        {
-            string res = result.Replace(' ', '-');
-            return res;
-        }
-        return result;
-    }
-
-
-
-    public async Task SearchUrlAsync(string eventurl, int startpage, string? word, string SaveDomainPath, string SaveUrlPath, char choice)
+    public async Task SearchUrlAsync(string url, int startpage, string? word, string SaveDomainPath, string SaveUrlPath, char choice, string SavedEmailsPath)
     {
         string htmlcontent = string.Empty;
         string correcturl = string.Empty;
+        string id = string.Empty;
 
 
         int maxpage = 0;
@@ -169,14 +175,22 @@ public class PageService
 
             while (true)
             {
-                if (startpage > 0)
+                if (!url.Contains("listing"))
                 {
-                    string fmturl = $"{eventurl}&page={startpage}";
-                    correcturl = fmturl;
+                    if (startpage > 0)
+                    {
+                        string fmturl = $"{url}&page={startpage}";
+                        correcturl = fmturl;
+                    }
+                    else
+                    {
+                        correcturl = url;
+                    }
+
                 }
                 else
                 {
-                    correcturl = eventurl;
+                    correcturl = url;
                 }
 
 
@@ -217,11 +231,23 @@ public class PageService
                 }
                 htmlcontent = response.Content.ReadAsStringAsync().Result;
 
-                var doc = new HtmlDocument();
-                doc.LoadHtml(htmlcontent);
+                if (url.Contains("listing"))
+                {
+                    bool saved = await GetEmailAsync(htmlcontent, SavedEmailsPath);
+                    if (saved)
+                    {
+                        string[] UrlToArray = url.Split('/');
+                        id = UrlToArray[4];
+                        Console.WriteLine("Email Found for {0}", id);
+                    }
+                    break;
+                }
 
+                //if maxpage is 0 then get maxpage value from response body
                 if (maxpage == 0)
                 {
+                    var doc = new HtmlDocument();
+                    doc.LoadHtml(htmlcontent);
                     //get maxpage number from html 
                     var getmaxpage = doc.DocumentNode.SelectNodes("//div[@id='paging']/a").Where(n => n.Attributes["href"].Value.Contains("page=")).Select(node => node.InnerText.Trim()).ToArray();
 
@@ -234,87 +260,95 @@ public class PageService
                 //get domains from response body 
                 var gotdomains = await GetDomainsAsync(htmlcontent, SaveDomainPath);
 
-                if(gotdomains) 
+                //get emails from response 
+                bool savedemail = await GetEmailAsync(htmlcontent, SavedEmailsPath);
+
+                if (word == null)
                 {
-                    Console.WriteLine("Domains saved from {0} page with {1}", startpage == 0? "default": startpage, string.IsNullOrEmpty(word) ? "is saved url" : "Keyword: " + word);
-                }else 
+                    string[] urlToArray = url.Split('/');
+                    id = urlToArray[4];
+                }
+
+                string txt = $"page {startpage} keyword: {word} ";
+
+                if (savedemail)
                 {
-                  Console.WriteLine("No unique domain on page {0} for {1}", startpage == 0? "default" : startpage, string.IsNullOrEmpty(word) ? "is saved url" : "Keyword: " + word);  
+                    Console.WriteLine("Email Found for {0}", string.IsNullOrEmpty(id) ? txt : id);
+                }
+                else
+                {
+                    Console.WriteLine("Email Not Found for {0}", string.IsNullOrEmpty(id) ? txt : id);
+                }
+
+                if (gotdomains)
+                {
+                    Console.WriteLine("Domains saved from {0} page with {1}", startpage == 0 ? "default" : startpage, string.IsNullOrEmpty(word) ? id : "Keyword: " + word);
+                }
+                else
+                {
+                    Console.WriteLine("No unique domain on page {0} for {1}", startpage == 0 ? "default" : startpage, string.IsNullOrEmpty(word) ? id : "Keyword: " + word);
 
                 }
+
                 if (choice == 'Y' || choice == 'y')
                 {
                     //get otherurls to search from response body 
                     var goturlstosearch = await GetOtherUrlsToSearchAsync(htmlcontent, SaveUrlPath);
 
-                   if (goturlstosearch) Console.WriteLine("Saved some link to search ");
+                    if (goturlstosearch) Console.WriteLine("Saved some link to search ");
 
                 }
 
                 if (startpage >= maxpage) break;
 
-                 startpage++;
+                startpage++;
 
             }
-
         }
         catch (Exception e)
         {
             Console.WriteLine(e.Message);
             return;
         }
-
     }
 
-
-    public async Task<bool> GetDomainsAsync(string htmlcontent, string PathToSaveDomains)
+    public async Task<bool> GetEmailAsync(string htmlcontent, string PathToSaveEmails)
     {
         IsSaved = false;
-        int currentdomaincount = VnDomais.Count;
-        int totaldomaincount = 0; 
 
-        string pattern = @"https?://(?:www\.)?([a-zA-Z0-9-]+\.[a-zA-Z]{2,})(?:/|$)";
+        // string domainpattern = @"https?://(?:www\.)?([a-zA-Z0-9-]+\.[a-zA-Z]{2,})(?:/|$)";
+        string emailpattern = @"href\s*=\s*['""]mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})['""]";
 
-        MatchCollection domainmatch = Regex.Matches(htmlcontent, pattern);
+        MatchCollection emailmatch = Regex.Matches(htmlcontent, emailpattern);
 
         try
         {
-            foreach (Match item in domainmatch)
+            foreach (Match item in emailmatch)
             {
-                //https://www.yellowpages.com.vn/categories/492472/shoes-footwear-manufacturing-service-(oem-odm-obm-service).html
 
-                string url = item.Groups[1].Value.ToString();
 
-                //Check if string is dirty 
+                string email = item.Groups[1].Value.ToString();
 
-                bool IsUrlDirty = _DomainsNotToCollect.Any(x => url.Contains(x, StringComparison.OrdinalIgnoreCase));
-
-                if (VnDomais.Count != 0)
-                {
-                    bool DomainIsFound = VnDomais.Contains(url);
-                }
+                //Check if email is dirty 
+                bool IsUrlDirty = _DomainsNotToCollect.Any(x => email.Contains(x, StringComparison.OrdinalIgnoreCase));
 
 
                 if (!IsUrlDirty)
                 {
-                    if (VnDomais != null)
+                    if (SavedEmails != null)
                     {
-                        if (!VnDomais.Contains(url))
+                        if (!SavedEmails.Contains(email))
                         {
-                            using (var sw = File.AppendText(PathToSaveDomains))
+                            using (var sw = File.AppendText(PathToSaveEmails))
                             {
-                                await sw.WriteLineAsync(url);
+                                await sw.WriteLineAsync(email);
                             }
-                            
 
-                            VnDomais.Add(url);
-                            totaldomaincount = VnDomais.Count; 
-                        }
-
-                        if(totaldomaincount > currentdomaincount)
-                        {
                             IsSaved = true;
+                            SavedEmails.Add(email);
+
                         }
+
                     }
 
                 }
@@ -325,18 +359,62 @@ public class PageService
         {
             Console.WriteLine(ex);
         }
-
         return IsSaved;
 
     }
 
 
+    public async Task<bool> GetDomainsAsync(string htmlcontent, string PathToSaveDomains)
+    {
+        IsSaved = false;
+
+        string pattern = @"https?://(?:www\.)?([a-zA-Z0-9-]+\.[a-zA-Z]{2,})(?:/|$)";
+
+        MatchCollection domainmatch = Regex.Matches(htmlcontent, pattern);
+
+        try
+        {
+            foreach (Match item in domainmatch)
+            {
+
+                string domain = item.Groups[1].Value.ToString();
+
+                //Check if email is dirty 
+
+                bool IsUrlDirty = _DomainsNotToCollect.Any(x => domain.Contains(x, StringComparison.OrdinalIgnoreCase));
+
+
+                if (!IsUrlDirty)
+                {
+                    if (VnDomais != null)
+                    {
+                        if (!VnDomais.Contains(domain))
+                        {
+                            using (var sw = File.AppendText(PathToSaveDomains))
+                            {
+                                await sw.WriteLineAsync(domain);
+                            }
+
+                            IsSaved = true;
+                            VnDomais.Add(domain);
+                        }
+
+                    }
+
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(ex);
+        }
+        return IsSaved;
+
+    }
     public async Task<bool> GetOtherUrlsToSearchAsync(string htmlcontent, string PathToSaveUrls)
     {
         IsSaved = false;
-        int currenturlcount = SavedUrlToSearch.Count; 
-        //variable to keep track of the current urls count 
-        int countforsavedurls = SavedUrlToSearch.Count;
+
         //Link regex to match
         string otherlinkpattern = @"<a\s+href=""(https?://)?(www\.)?([^""]+?)""[^>]*>(.*?)</a>";
 
@@ -367,14 +445,11 @@ public class PageService
                             {
                                 await sw.WriteLineAsync(url);
                             }
-                           
+
+                            IsSaved = true;
+
                             SavedUrlToSearch.Add(url);
 
-                            int totalsavedurl = SavedUrlToSearch.Count; 
-                            if(currenturlcount > totalsavedurl)
-                            {
-                               IsSaved = true;  
-                            }
                         }
 
                     }
@@ -387,7 +462,7 @@ public class PageService
             Console.WriteLine(ex);
 
         }
-        return IsSaved; 
+        return IsSaved;
 
     }
 }
